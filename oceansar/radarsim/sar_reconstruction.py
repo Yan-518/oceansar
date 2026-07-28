@@ -75,7 +75,7 @@ def raw_reconstr(raw_output_file, reconstr_output_file):
     f_matrix = f_dop[:, None] + np.arange(int(-N_ch/2), int(N_ch/2)+1) * prf # (az_size * prf_band * N_ch)
     H_vec = np.exp(-1j * np.pi * (b_ati**2 / (2 * l0 * sr0) + b_ati * f_matrix[:,:, None] / v_orbit)) 
     P_vec = np.linalg.inv(H_vec)
-    raw_data_fft = np.fft.fftshift(np.fft.fft(raw_data[0, :, :, :], axis=1), axes = 0) # FFT along azimuth
+    raw_data_fft = np.fft.fftshift(np.fft.fft(raw_data[0, :, :, :], axis=1), axes = 1) # FFT along azimuth
     reconstr_signal = np.einsum('car,acb->bar', raw_data_fft, P_vec)
     upsample_signal = np.fft.ifft(np.fft.ifftshift(reconstr_signal.reshape(N_ch * raw_data.shape[2], raw_data.shape[3]), axes = 0),axis = 0)
     # add the dimension of polarization
