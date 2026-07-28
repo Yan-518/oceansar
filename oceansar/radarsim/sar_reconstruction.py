@@ -65,7 +65,7 @@ def raw_reconstr(raw_output_file, reconstr_output_file):
 
     # upsample_signal = N_ch * np.fft.ifft(np.fft.ifftshift(upsample_signal, axes=0), axis=0)  # IFFT to get back to time domain
     # # let's start from following the paper
-    f_dop = np.fft.fftfreq(raw_data.shape[2], d=1./prf)
+    f_dop = np.fft.fftshift(np.fft.fftfreq(raw_data.shape[2], d=1./prf))
     # f_matrix = f_dop[:, None] + np.arange(N_ch) * prf # (az_size * prf_band * N_ch)
     # H_vec = np.exp(-1j * np.pi * (b_ati**2 / (2 * l0 * sr0) + b_ati * f_matrix[:,:, None] / v_orbit)) 
     # P_vec = np.linalg.inv(H_vec)
