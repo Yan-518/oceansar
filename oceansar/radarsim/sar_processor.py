@@ -754,16 +754,22 @@ def ross_sar_focus(cfg_file, reconstruct_raw_output_file, output_file):
     az_weighting = cfg.processing.az_weighting
     doppler_bw = cfg.processing.doppler_bw
     plot_format = cfg.processing.plot_format
+    plot_tex = cfg.processing.plot_tex
     plot_save = cfg.processing.plot_save
     plot_path = cfg.processing.plot_path
     plot_raw = cfg.processing.plot_raw
     plot_rcmc_dopp = cfg.processing.plot_rcmc_dopp
     plot_rcmc_time = cfg.processing.plot_rcmc_time
     plot_image_valid = cfg.processing.plot_image_valid
+    range_dependent_azimuth = (
+        cfg.processing.range_dependent_azimuth
+        if hasattr(cfg.processing, 'range_dependent_azimuth') else True)
+    add_point_target = (cfg.sim.add_point_target
+                        if hasattr(cfg.sim, 'add_point_target') else False)
 
     # SAR
     f0 = cfg.sar.f0
-    prf = cfg.sar.prf
+    prf = cfg.sar.prf * 5
     alt = cfg.sar.alt
     v_ground = cfg.sar.v_ground
     rg_bw = cfg.sar.rg_bw
@@ -784,9 +790,18 @@ def ross_sar_focus(cfg_file, reconstruct_raw_output_file, output_file):
     inc_angle = raw_file.get('inc_angle')
     # b_ati = raw_file.get('b_ati')
     # b_xti = raw_file.get('b_xti')
+    sr_pt = None
+    if 'sr_pt' in raw_file.__file__.variables:
+        sr_pt = raw_file.get('sr_pt')
     raw_file.close()
-    v_eff = estimate_effective_velocity(cfg, np.deg2rad(inc_angle))
+    inc_angle_rad = np.asarray(np.deg2rad(inc_angle)).item()
+    ghist = make_geohistory(cfg, inc_angle_rad)
+    v_eff = estimate_effective_velocity(cfg, inc_angle_rad, ghist=ghist)
+    _, look_focus, _ = reference_point_geometry(cfg, inc_angle_rad)
+    point_targets = point_target_geometry(cfg, inc_angle_rad)
     print("Effective focusing velocity: %.3f m/s" % v_eff)
+    print("Range-dependent azimuth compression: %s" %
+          range_dependent_azimuth)
 
     # OTHER INITIALIZATIONS
     # Create plots directory
@@ -796,6 +811,7 @@ def ross_sar_focus(cfg_file, reconstruct_raw_output_file, output_file):
             os.makedirs(plot_path)
 
     slc = []
+    filter_cache = {}
 
     ########################
     # PROCESSING MAIN LOOP #
@@ -811,11 +827,17 @@ def ross_sar_focus(cfg_file, reconstruct_raw_output_file, output_file):
         
     # Optimize matrix sizes
     az_size_orig, rg_size_orig = raw_data[0].shape
+    if sr_pt is not None:
+        check_reference_range_history(
+            cfg, ghist, inc_angle_rad, sr0, az0, prf, v_ground, f0,
+            sr_pt, az_size_orig, v_eff, plot_path=plot_path,
+            plot_format=plot_format, plot_save=plot_save)
     optsize = utils.optimize_fftsize(raw_data[0].shape)
-    optsize = [raw_data.shape[0], optsize[0], optsize[1]] # remove the hard coded number of 1
+    optsize = [raw_data.shape[0], optsize[0], optsize[1]]
     data = np.zeros(optsize, dtype=complex)
     data[:, :raw_data[0].shape[0],
             :raw_data[0].shape[1]] = raw_data[:, :, :]
+
 
     az_size, rg_size = data.shape[1:]
 
@@ -835,10 +857,27 @@ def ross_sar_focus(cfg_file, reconstruct_raw_output_file, output_file):
         ant_l_rx = cfg.sar.ant_L_rx
         beam_pattern = (sinc_bp(sin_az, ant_l_tx, f0, field=True)
                         * sinc_bp(sin_az, ant_l_rx, f0, field=True))
-    rcmc_fa = sr0 / np.sqrt(1 - (fa * (l0 / 2.) / v_eff)**2.) - sr0
+    filter_key = (az_size, rg_size)
+    if filter_key not in filter_cache:
+        rcmc_fa, ph_ac_reference, _, _ = (
+            geohistory_reference_filter(ghist, look_focus, fa, f0))
+        ph_src = geohistory_src_filter(
+            ghist, look_focus, fa, fr, f0,
+            rcmc_fa, ph_ac_reference)
+        if range_dependent_azimuth:
+            slant_range = (sr0 + np.arange(rg_size)
+                            * const.c/(2*rg_sampling))
+            ph_ac = geohistory_range_azimuth_filter(
+                ghist, slant_range, fa, f0)
+        else:
+            ph_ac = ph_ac_reference
+        filter_cache[filter_key] = (rcmc_fa, ph_src, ph_ac)
+    rcmc_fa, ph_src, ph_ac = filter_cache[filter_key]
     data = np.fft.fft(np.fft.fft(data, axis=-1), axis=-2)
-    data = (data * np.exp(4j * np.pi * rcmc_fa.reshape((1, az_size, 1)) /
-                            const.c * fr.reshape((1, 1, rg_size))))
+    range_doppler_phase = (
+        4*np.pi/const.c * rcmc_fa[:, np.newaxis]
+        * fr[np.newaxis, :] + ph_src)
+    data = data * np.exp(1j*range_doppler_phase[np.newaxis, :, :])
     data = np.fft.ifft(data, axis=2)
 
     if plot_rcmc_dopp:
@@ -872,9 +911,13 @@ def ross_sar_focus(cfg_file, reconstruct_raw_output_file, output_file):
         zeros[0:int(n_samp)] = weighting
         weighting = np.roll(zeros, int(-n_samp / 2))
     weighting = np.where(np.abs(beam_pattern) > 0, weighting/beam_pattern, 0)
-    ph_ac = 4. * np.pi / l0 * sr0 * \
-        (np.sqrt(1. - (fa * l0 / 2. / v_eff)**2.) - 1.)
-    data = data * (np.exp(1j * ph_ac) * weighting).reshape((1, az_size, 1))
+    if ph_ac.ndim == 1:
+        azimuth_filter = (
+            np.exp(1j*ph_ac)*weighting).reshape((1, az_size, 1))
+    else:
+        azimuth_filter = (np.exp(1j*ph_ac)[np.newaxis, :, :]
+                            * weighting.reshape((1, az_size, 1)))
+    data = data*azimuth_filter
 
     data = np.fft.ifft(data, axis=1)
 
@@ -886,6 +929,17 @@ def ross_sar_focus(cfg_file, reconstruct_raw_output_file, output_file):
     n_val_az_2 = np.floor(
         doppler_bw / 2. / (2. * v_eff**2. / l0 / sr0) * prf / 2.) * 2.
     data = data[:, int(n_val_az_2):int(az_size_orig - n_val_az_2 - 1), :]
+    # if add_point_target and plot_save:
+    #     expected_targets = []
+    #     for target_name, target_look, target_y in point_targets:
+    #         target_sr = ghist.sr_spl(target_look, 0.0).item()
+    #         expected_az = (
+    #             (target_y - az0)*prf/v_ground - n_val_az_2)
+    #         expected_rg = (target_sr - sr0)*2*rg_sampling/const.c
+    #         expected_targets.append(
+    #             (target_name, expected_az, expected_rg))
+    #     plot_point_target_azimuth_grid(
+    #         data, expected_targets, ch, prf, plot_path, plot_format)
     if plot_image_valid:
         plt.figure()
         plt.imshow(np.abs(data[0]), origin='lower', vmin=0, vmax=np.max(np.abs(data)),
