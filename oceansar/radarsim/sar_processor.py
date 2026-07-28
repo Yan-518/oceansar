@@ -769,7 +769,8 @@ def ross_sar_focus(cfg_file, reconstruct_raw_output_file, output_file):
 
     # SAR
     f0 = cfg.sar.f0
-    prf = cfg.sar.prf * 5
+    num_ch = cfg.sar.num_ch
+    prf = cfg.sar.prf * num_ch
     alt = cfg.sar.alt
     v_ground = cfg.sar.v_ground
     rg_bw = cfg.sar.rg_bw

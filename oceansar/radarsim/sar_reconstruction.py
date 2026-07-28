@@ -86,6 +86,7 @@ def raw_reconstr(raw_output_file, reconstr_output_file):
     reconstr_file = tpio.ReconstructedRawFile(reconstr_output_file, 'w', upsample_signal.shape)
     reconstr_file.set('inc_angle', inc_angle)
     reconstr_file.set('f0', f0)
+    reconstr_file.set('num_ch', num_ch)
     reconstr_file.set('ant_L', ant_L)
     reconstr_file.set('prf', prf)
     reconstr_file.set('v_ground', v_ground)
