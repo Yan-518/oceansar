@@ -37,7 +37,8 @@ def raw_reconstr(raw_output_file, reconstr_output_file):
     # # let's start from following the paper
     f_dop = np.fft.fftshift(np.fft.fftfreq(raw_data.shape[2], d=1./prf))
     f_matrix = f_dop[:, None] + np.arange(int(-N_ch/2), int(N_ch/2)+1) * prf # (az_size * prf_band * N_ch)
-    H_vec = np.exp(-1j * np.pi * (b_ati**2 / (2 * l0 * sr0) + b_ati * f_matrix[:,:, None] / v_orbit)) 
+    # H_vec = np.exp(-1j * np.pi * (b_ati**2 / (2 * l0 * sr0) + b_ati * f_matrix[:,:, None] / v_orbit)) 
+    H_vec = np.exp(-1j * (v_ground/v_orbit) *np.pi * (b_ati**2 / (2 * l0 * sr0) + b_ati * f_matrix[:,:, None] / v_orbit)) 
     P_vec = np.linalg.inv(H_vec)
     raw_data_fft = np.fft.fftshift(np.fft.fft(raw_data[0, :, :, :], axis=1), axes = 1) # FFT along azimuth
     reconstr_signal = np.einsum('car,acb->bar', raw_data_fft, P_vec)
