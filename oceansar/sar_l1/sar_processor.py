@@ -976,7 +976,8 @@ def ross_sar_focus(cfg_file, reconstruct_raw_output_file, output_file):
 
     # SAR
     f0 = cfg.sar.f0
-    num_ch = cfg.sar.num_ch
+    num_ch = cfg.sar.num_ch # needs to be changed!
+    # num_ch = 2
     prf = cfg.mode.prf * num_ch
     alt = cfg.sar.alt
     rg_bw = cfg.mode.rg_bw
