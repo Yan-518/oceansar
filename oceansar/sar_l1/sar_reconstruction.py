@@ -101,15 +101,16 @@ def raw_reconstr(raw_output_file, reconstr_output_file, channel_ids = [0, 1, 2, 
 
     # Convert to the azimuth domain
     upsample_signal = np.fft.ifft(np.fft.ifftshift(full_spectrum, axes=0), axis=0)
-    # add the dimension of polarization
-    upsample_signal = upsample_signal[None, :, :]
+    # add the dimension of polarization, number of channels
+    upsample_signal = upsample_signal[None, None, :, :]
     print('Upsampling completed!')
     # save the recontructed raw data to a new file
     # better to put together with the raw_data to reduce the volume in the future
     reconstr_file = tpio.ReconstructedRawFile(reconstr_output_file, 'w', upsample_signal.shape)
     reconstr_file.set('inc_angle', inc_angle)
     reconstr_file.set('f0', f0)
-    reconstr_file.set('num_ch', N_ch)
+    reconstr_file.set('num_ch', upsample_signal.shape[1])
+    reconstr_file.set('ids_ch', channel_ids)
     reconstr_file.set('ant_L', ant_L)
     reconstr_file.set('prf', prf)
     reconstr_file.set('v_ground', v_ground)
@@ -118,6 +119,8 @@ def raw_reconstr(raw_output_file, reconstr_output_file, channel_ids = [0, 1, 2, 
     reconstr_file.set('sr0', sr0)
     reconstr_file.set('rg_sampling', rg_sampling)
     reconstr_file.set('rg_bw', rg_bw)
+    reconstr_file.set('b_ati', np.array([0]))
+    reconstr_file.set('b_xti', np.array([0]))
     # Preserve the complete antenna definition for focusing after reconstruction.
     for name in ('antenna_configuration', 'antenna_pattern_scope'):
         if name in raw_file.__file__.ncattrs():
