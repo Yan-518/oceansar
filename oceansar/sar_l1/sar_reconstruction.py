@@ -1,6 +1,8 @@
+import json
 import numpy as np
 from oceansar import ocs_io as tpio
 from oceansar import constants as const
+from oceansar.ocs_io import product_metadata as metadata
 from oceansar.utils import geometry as geo
 #create a function
 def raw_reconstr(raw_output_file, reconstr_output_file, channel_ids = [0, 1, 2, 3, 4]):
@@ -16,10 +18,13 @@ def raw_reconstr(raw_output_file, reconstr_output_file, channel_ids = [0, 1, 2, 
         matrix inversion requires an odd number of channels and invertible
         channel transfer matrices.
     reconstr_output_file : str or path-like
-        Destination ReconstructedRawFile with complex sample shape
-        (1, number_of_channels * input_azimuth_samples, range_samples).
-        The original per-channel prf is retained in metadata; ross_focus
-        derives the effective sampling rate as prf * num_ch.
+        Destination RawFile with complex sample shape
+        (1, 1, number_of_channels * input_azimuth_samples, range_samples).
+        The original acquisition PRF and reconstructed azimuth sampling rate
+        are both recorded in the product metadata.
+    channel_ids : sequence of int, optional
+        Input channels used for reconstruction. The selected IDs are saved as
+        the ``ids_ch`` product variable.
 
     Returns
     -------
@@ -104,27 +109,68 @@ def raw_reconstr(raw_output_file, reconstr_output_file, channel_ids = [0, 1, 2, 
     # add the dimension of polarization, number of channels
     upsample_signal = upsample_signal[None, None, :, :]
     print('Upsampling completed!')
-    # save the recontructed raw data to a new file
-    # better to put together with the raw_data to reduce the volume in the future
-    reconstr_file = tpio.ReconstructedRawFile(reconstr_output_file, 'w', upsample_signal.shape)
+    # These vectors follow the azimuth sample grid, so interpolate them to
+    # match the reconstructed signal's increased sample count.
+    sr_pt = np.ma.asarray(raw_file.get('sr_pt'))
+    if (sr_pt.shape != (N_az,) or np.ma.is_masked(sr_pt)
+            or not np.isfinite(sr_pt).all()):
+        raise ValueError('Raw sr_pt must contain one finite value per azimuth sample')
+    source_az = np.arange(N_az)
+    output_az = np.arange(N_out) / N_ch
+
+    nrcs_avg = np.ma.asarray(raw_file.get('NRCS_avg'))
+    if (nrcs_avg.shape != (raw_data.shape[0], N_az)
+            or np.ma.is_masked(nrcs_avg)
+            or not np.isfinite(nrcs_avg).all()):
+        raise ValueError('Raw NRCS_avg must match the polarization and azimuth dimensions')
+
+    source_labels = json.loads(
+        getattr(raw_file.__file__, 'polarizations', '[]'))
+    if source_labels:
+        if len(source_labels) != raw_data.shape[0]:
+            raise ValueError('Raw polarization labels do not match the polarization dimension')
+        output_labels = [source_labels[0]]
+    else:
+        output_labels = ['pol0']
+
+    # Preserve annotations that sar_focus uses to restore acquisition context.
+    copied_attributes = {
+        name: raw_file.__file__.getncattr(name)
+        for name in (
+            'antenna_configuration', 'antenna_pattern_scope',
+            'processing_geometry', 'acquisition_mode',
+            'burst_image_length_m')
+        if name in raw_file.__file__.ncattrs()
+    }
+    raw_file.close()
+
+    # Write the standard four-dimensional raw schema expected by sar_focus.
+    reconstr_file = tpio.RawFile(reconstr_output_file, 'w', upsample_signal.shape)
     reconstr_file.set('inc_angle', inc_angle)
     reconstr_file.set('f0', f0)
     reconstr_file.set('num_ch', upsample_signal.shape[1])
-    reconstr_file.set('ids_ch', channel_ids)
     reconstr_file.set('ant_L', ant_L)
-    reconstr_file.set('prf', prf)
+    metadata.write_sampling(reconstr_file.__file__, N_ch * prf, prf)
     reconstr_file.set('v_ground', v_ground)
     reconstr_file.set('az0', az0)
     reconstr_file.set('orbit_alt', alt)
     reconstr_file.set('sr0', sr0)
     reconstr_file.set('rg_sampling', rg_sampling)
     reconstr_file.set('rg_bw', rg_bw)
-    reconstr_file.set('b_ati', np.array([0]))
-    reconstr_file.set('b_xti', np.array([0]))
-    # Preserve the complete antenna definition for focusing after reconstruction.
-    for name in ('antenna_configuration', 'antenna_pattern_scope'):
-        if name in raw_file.__file__.ncattrs():
-            reconstr_file.__file__.setncattr(name, raw_file.__file__.getncattr(name))
+    reconstr_file.set('b_ati', np.zeros(1))
+    reconstr_file.set('b_xti', np.zeros(1))
+    reconstr_file.set('sr_pt', np.interp(output_az, source_az, sr_pt))
+    reconstr_file.set(
+        'NRCS_avg', np.interp(output_az, source_az, nrcs_avg[0])[None, :])
     reconstr_file.set('raw_data*', upsample_signal)
-    raw_file.close()
+
+    ids_ch = np.asarray(channel_ids, dtype=np.int32)
+    reconstr_file.__file__.createDimension('ids_ch_dim', ids_ch.size)
+    ids_ch_var = reconstr_file.__file__.createVariable(
+        'ids_ch', 'i4', ('ids_ch_dim',))
+    ids_ch_var.units = '[]'
+    ids_ch_var[:] = ids_ch
+    reconstr_file.__file__.polarizations = json.dumps(output_labels)
+    for name, value in copied_attributes.items():
+        reconstr_file.__file__.setncattr(name, value)
     reconstr_file.close()
