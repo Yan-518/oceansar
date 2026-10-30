@@ -5,7 +5,7 @@ from oceansar import constants as const
 from oceansar.ocs_io import product_metadata as metadata
 from oceansar.utils import geometry as geo
 #create a function
-def raw_reconstr(raw_output_file, reconstr_output_file, channel_ids = [0, 1, 2, 3, 4]):
+def raw_reconstr(raw_output_file, reconstr_output_file, K, channel_ids = [0, 1, 2, 3, 4]):
     # Load config and raw data
     """Reconstruct an azimuth-oversampled raw signal from along-track channels.
 
@@ -22,6 +22,11 @@ def raw_reconstr(raw_output_file, reconstr_output_file, channel_ids = [0, 1, 2, 
         (1, 1, number_of_channels * input_azimuth_samples, range_samples).
         The original acquisition PRF and reconstructed azimuth sampling rate
         are both recorded in the product metadata.
+    K: int
+        Number of ambiguities to be reconstructed. The output azimuth sample count is
+        ``K * input_azimuth_samples``. The output azimuth sampling rate is
+        ``K * input_PRF``. The output azimuth frequency grid is
+        ``[-K/2 * input_PRF, K/2 * input_PRF]``.
     channel_ids : sequence of int, optional
         Input channels used for reconstruction. The selected IDs are saved as
         the ``ids_ch`` product variable.
@@ -67,21 +72,30 @@ def raw_reconstr(raw_output_file, reconstr_output_file, channel_ids = [0, 1, 2, 
     N_ch = raw_data.shape[1] # number of channels
     N_az = raw_data.shape[2]
     N_rg = raw_data.shape[3]
+    assert 1 <= K <= N_ch, "K must be between 1 and N_ch"
     # # construct transfer function in frequency domain, eq13 (Krieger et al, 2004)
     f_dop = np.fft.fftshift(np.fft.fftfreq(raw_data.shape[2], d=1./prf))
-    k_start = np.ceil(-N_ch / 2 - f_dop / prf).astype(int)
-    k_alias = k_start[:, None] + np.arange(N_ch)[None, :]
+    k_start = np.ceil(-K / 2 - f_dop / prf).astype(int)
+    k_alias = k_start[:, None] + np.arange(K)[None, :]
     f_matrix = f_dop[:, None] + k_alias * prf
-    H_vec = np.exp(-1j * np.pi * (b_ati**2 / (2 * l0 * sr0) + b_ati * f_matrix[:,:, None] / v_orbit)) 
+    H_vec = np.exp(
+        -1j * np.pi * (
+            b_ati[None, :, None]**2 / (2 * l0 * sr0)
+            + b_ati[None, :, None] * f_matrix[:, None, :] / v_orbit
+        )
+    ) 
     # H_vec = np.exp(-1j * (v_ground/v_orbit) *np.pi * (b_ati**2 / (2 * l0 * sr0) + b_ati * f_matrix[:,:, None] / v_orbit)) 
-    P_vec = N_ch * np.linalg.inv(H_vec)
+    if K == N_ch:
+        P_vec = K * np.linalg.inv(H_vec)
+    else:
+        P_vec = K * np.linalg.pinv(H_vec)
     raw_data_fft = np.fft.fftshift(np.fft.fft(raw_data[0, :, :, :], axis=1), axes = 1) # FFT along azimuth
-    reconstr_signal = np.einsum('car,acb->bar', raw_data_fft, P_vec)
-    N_out = N_ch * N_az
+    reconstr_signal = np.einsum('car,abc->bar', raw_data_fft, P_vec)
+    N_out = K * N_az
     df = prf / N_az
 
     f_out = np.fft.fftshift(
-        np.fft.fftfreq(N_out, d=1.0 / (N_ch * prf))
+        np.fft.fftfreq(N_out, d=1.0 / (K * prf))
     )
 
     # Map each recovered component to its actual output frequency bin
@@ -100,7 +114,7 @@ def raw_reconstr(raw_output_file, reconstr_output_file, channel_ids = [0, 1, 2, 
     full_spectrum = np.zeros((N_out, N_rg), dtype=complex)
 
     for az_idx in range(N_az):
-        for band_idx in range(N_ch):
+        for band_idx in range(K):
             out_idx = indices[az_idx, band_idx]
             full_spectrum[out_idx, :] = reconstr_signal[band_idx, az_idx, :]
 
@@ -150,7 +164,7 @@ def raw_reconstr(raw_output_file, reconstr_output_file, channel_ids = [0, 1, 2, 
     reconstr_file.set('f0', f0)
     reconstr_file.set('num_ch', upsample_signal.shape[1])
     reconstr_file.set('ant_L', ant_L)
-    metadata.write_sampling(reconstr_file.__file__, N_ch * prf, prf)
+    metadata.write_sampling(reconstr_file.__file__, K * prf, prf)
     reconstr_file.set('v_ground', v_ground)
     reconstr_file.set('az0', az0)
     reconstr_file.set('orbit_alt', alt)
