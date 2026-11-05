@@ -5,13 +5,16 @@ from scipy.signal import resample_poly
 from oceansar import constants as const
 from oceansar.ocs_io import product_metadata as metadata
 from oceansar.utils import geometry as geo
+from oceansar.sar_l1.sar_processor import make_geohistory, mean_orbital_velocity
 #create a function
-def raw_reconstr(raw_output_file, reconstr_output_file, K, channel_ids = [0, 1, 2, 3, 4], downsample = True):
+def raw_reconstr(cfg, raw_output_file, reconstr_output_file, K, channel_ids = [0, 1, 2, 3, 4], downsample = True):
     # Load config and raw data
     """Reconstruct an azimuth-oversampled raw signal from along-track channels.
 
     Parameters
     ----------
+    cfg : object
+        Configuration object containing SAR processing parameters.
     raw_output_file : str or path-like
         RawFile with complex samples ordered (polarization, channel, azimuth,
         range), along-track baselines in metres and radar/geometry metadata.
@@ -45,13 +48,6 @@ def raw_reconstr(raw_output_file, reconstr_output_file, K, channel_ids = [0, 1, 
     Apply the desired system errors before reconstruction. This function
     neither calibrates samples nor adds receiver noise.
     """
-    # REVIEW (Yan Yuan): exceptions before close() leave datasets open. Suggested
-    # structure: wrap each dataset's processing in try/finally, including output.
-    # raw_file = tpio.RawFile(raw_output_file, 'r')
-    # try:
-    #     ...  # Read and reconstruct while the input dataset is open.
-    # finally:
-    #     raw_file.close()
     raw_file = tpio.RawFile(raw_output_file, 'r')
     raw_data = raw_file.get('raw_data*')  # Shape: [num_bursts, num_ch, az_size, rg_size]
     sr0 = raw_file.get('sr0')
@@ -76,13 +72,9 @@ def raw_reconstr(raw_output_file, reconstr_output_file, K, channel_ids = [0, 1, 
     v_ground = raw_file.get('v_ground')
     alt = raw_file.get('orbit_alt')
 
-    # REVIEW (Yan Yuan): this altitude-based speed may differ from the GeoHistory
-    # velocity used to generate channel phases. Suggested fix: restore geometry
-    # from input metadata and derive the same orbital velocity/angle mapping as
-    # the generator; validate any constant-speed approximation over the aperture.
-    # geometry_cfg = metadata.focusing_configuration(cfg, raw_file.__file__)
-    # Requires a cfg argument (or a geometry factory); cfg is not available here.
-    v_orbit = geo.orbit_to_vel(alt, inc=np.deg2rad(inc_angle))
+    inc_angle_rad = np.asarray(np.deg2rad(inc_angle)).item()
+    ghist = make_geohistory(cfg, inc_angle_rad)
+    v_orbit = mean_orbital_velocity(ghist)
 
     l0 = const.c / f0
 
