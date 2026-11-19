@@ -17,6 +17,7 @@ import os
 import time
 import argparse
 import copy
+import json
 
 import numpy as np
 from matplotlib import pyplot as plt
@@ -621,6 +622,19 @@ def processing_antenna_pattern(cfg, beam_pattern):
     return np.where(abs(field) >= minimum*np.max(abs(field)), field, 0)
 
 
+def cumulative_channel_antenna_field(antenna_field, b_ati, f0,
+                                    direction_cosine, channel_count):
+    """Include the ATI array factor for a prefix-summed raw channel."""
+    baselines = np.asarray(b_ati, dtype=float)
+    sine = np.asarray(direction_cosine, dtype=float)
+    field = np.asarray(antenna_field)
+    if (channel_count < 1 or channel_count > baselines.size
+            or field.shape != sine.shape):
+        raise ValueError('Invalid cumulative-channel antenna inputs')
+    phase = (2*np.pi*f0/const.c) * baselines[:channel_count, None] * sine[None, :]
+    return field * np.sum(np.exp(-1j*phase), axis=0)
+
+
 def azimuth_filter_samples(sample_rate, doppler_rate, bandwidth=None):
     """Return nominal azimuth focusing-filter support in time samples.
 
@@ -1034,6 +1048,27 @@ def sar_focus(cfg_file, raw_output_file, output_file, *, plot_show=False):
             if (np.ma.is_masked(baseline) or np.shape(baseline) != (num_ch,)
                     or not np.isfinite(baseline).all()):
                 raise ValueError('Invalid raw baseline header: ' + name)
+        cumulative_channel_counts = None
+        cumulative_metadata = getattr(
+            raw_file.__file__, 'cumulative_channel_counts', None)
+        if cumulative_metadata is not None:
+            try:
+                cumulative_channel_counts = json.loads(cumulative_metadata)
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    'Invalid cumulative_channel_counts raw metadata'
+                ) from exc
+            expected_counts = list(range(1, num_ch + 1))
+            if cumulative_channel_counts != expected_counts:
+                raise ValueError(
+                    'cumulative_channel_counts must identify prefix sums '
+                    'with counts [1, ..., num_ch]'
+                )
+            if np.any(np.abs(b_xti) > 1e-12):
+                raise NotImplementedError(
+                    'Cumulative-channel antenna compensation currently '
+                    'supports along-track baselines only'
+                )
         follows_current = bool(getattr(raw_file.__file__, 'point_targets_follow_current',
                                       getattr(cfg.sim, 'point_targets_follow_current', False)))
         direction = np.deg2rad(cfg.ocean.current_dir)
@@ -1146,6 +1181,12 @@ def sar_focus(cfg_file, raw_output_file, output_file, *, plot_show=False):
         ## FIXME this will not work for a long separation betwen Tx and Rx!!!
         sin_az = geohistory_doppler_sine(ghist, look_focus, fa, f0)
         beam_pattern = antennas.field(sin_az)
+        if cumulative_channel_counts is not None:
+            # A prefix sum has a channel-count-dependent effective response:
+            # the shared antenna field times the coherent ATI array factor.
+            beam_pattern = cumulative_channel_antenna_field(
+                beam_pattern, b_ati, f0, sin_az,
+                cumulative_channel_counts[ch])
         beam_pattern = processing_antenna_pattern(cfg, beam_pattern)
         #fa[az_size/2:] = fa[az_size/2:] - prf
         filter_key = (az_size, rg_size)
@@ -1298,6 +1339,9 @@ def sar_focus(cfg_file, raw_output_file, output_file, *, plot_show=False):
     proc_file.set('num_ch', num_ch)
     proc_file.set('ant_L', antennas.tx.La)
     antennas.save(proc_file.__file__)
+    if cumulative_channel_counts is not None:
+        proc_file.__file__.cumulative_channel_counts = json.dumps(
+            cumulative_channel_counts)
     metadata.write_sampling(proc_file.__file__, prf, acquisition_prf)
     metadata.write_geometry(proc_file.__file__, cfg, labels)
     proc_file.__file__.processed_doppler_bandwidth_hz = float(min(doppler_bw, prf))
